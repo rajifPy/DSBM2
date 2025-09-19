@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "app.py",
+      "use": "@vercel/python"
+    },
+    {
+      "src": "api_client.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "(.*)",
+      "dest": "app.py"
+    }
+  ],
+  "env": {
+    "BPS_API_KEY": "0c170847a66a0641ee3d16a3c292d6a9"
+  }
+}
