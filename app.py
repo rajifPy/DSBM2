@@ -1,19 +1,21 @@
 import dash
 from dash import dcc, html, Input, Output, callback, dash_table
+from dash.dash_table.Format import Format, Scheme
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
-import flask
 import os
 from datetime import datetime, timedelta
 from scipy import stats
 import warnings
 warnings.filterwarnings('ignore')
 
-# Inisialisasi app
-app = dash.Dash(__name__, server=flask.Flask(__name__))
+# Inisialisasi app untuk Railway
+app = dash.Dash(__name__)
+server = app.server  # Penting untuk Railway deployment
+
 app.title = "Dashboard Visualisasi Volume Bongkar Muat antar Pulau di Pelabuhan Utama Indonesia - BPS"
 
 # Layout aplikasi
@@ -202,17 +204,62 @@ app.layout = html.Div([
     dcc.Store(id='processed-data-store'),
 ], className="main-container")
 
-# Fungsi untuk memuat data dari CSV
+# Fungsi untuk memuat data dari CSV dengan error handling yang lebih robust
 def load_csv_data():
+    """Load CSV data dengan fallback ke sample data"""
     try:
-        # Baca file CSV
-        df = pd.read_csv('data/data_bongkar_muat_4_pelabuhan utama.csv')
+        # Coba beberapa path yang mungkin
+        possible_paths = [
+            'data/data_bongkar_muat_4_pelabuhan utama.csv',
+            './data/data_bongkar_muat_4_pelabuhan utama.csv',
+            'data_bongkar_muat_4_pelabuhan utama.csv',
+            './data_bongkar_muat_4_pelabuhan utama.csv'
+        ]
         
-        # Ubah format tanggal
-        df['tgl'] = pd.to_datetime(df['tgl'])
+        df = None
+        used_path = None
+        
+        for path in possible_paths:
+            if os.path.exists(path):
+                print(f"Found CSV file at: {path}")
+                df = pd.read_csv(path)
+                used_path = path
+                break
+        
+        if df is None:
+            print("CSV file not found in any expected location, using sample data")
+            return get_enhanced_sample_data()
+        
+        # Debug info
+        print(f"CSV loaded from {used_path}")
+        print(f"CSV shape: {df.shape}")
+        print(f"CSV columns: {df.columns.tolist()}")
+        
+        # Ubah format tanggal dengan error handling
+        try:
+            # Coba format DD/MM/YYYY dulu
+            df['tgl'] = pd.to_datetime(df['tgl'], format='%d/%m/%Y', errors='coerce')
+        except:
+            try:
+                # Coba format lain
+                df['tgl'] = pd.to_datetime(df['tgl'], errors='coerce')
+            except:
+                print("Error parsing dates, using sample data")
+                return get_enhanced_sample_data()
+        
+        # Drop rows dengan tanggal invalid
+        df = df.dropna(subset=['tgl'])
+        
+        if df.empty:
+            print("No valid dates found, using sample data")
+            return get_enhanced_sample_data()
         
         # Ubah format data dari wide ke long
         df_long = df.melt(id_vars=['tgl'], var_name='pelabuhan', value_name='volume')
+        
+        # Pastikan volume adalah numeric dan drop NaN
+        df_long['volume'] = pd.to_numeric(df_long['volume'], errors='coerce')
+        df_long = df_long.dropna(subset=['volume'])
         
         # Ekstrak tahun, bulan, dan kuartal
         df_long['tahun'] = df_long['tgl'].dt.year
@@ -221,13 +268,17 @@ def load_csv_data():
         df_long['kuartal'] = df_long['tgl'].dt.quarter
         df_long['hari_dalam_minggu'] = df_long['tgl'].dt.day_name()
         
+        print(f"Successfully processed data: {len(df_long)} records")
         return df_long
+        
     except Exception as e:
         print(f"Error loading CSV data: {e}")
+        print("Falling back to sample data")
         return get_enhanced_sample_data()
 
 def get_enhanced_sample_data():
-    # Buat data sampel yang lebih realistis dengan pola seasonal
+    """Generate enhanced sample data jika CSV tidak tersedia"""
+    print("Generating enhanced sample data...")
     np.random.seed(42)
     
     sample_dates = pd.date_range(start='2006-01-01', end='2024-12-01', freq='MS')
@@ -256,6 +307,7 @@ def get_enhanced_sample_data():
                 'hari_dalam_minggu': date.strftime('%A')
             })
     
+    print(f"Sample data generated: {len(sample_data)} records")
     return pd.DataFrame(sample_data)
 
 # Callback untuk fetch data
@@ -291,7 +343,7 @@ def fetch_data(n_clicks):
         success_msg = html.Div([
             html.Span("✅ Data berhasil dimuat!", className="success-msg"),
             html.Br(),
-            html.Small(f"📊 {len(data):,} records | 🏴󠁧󠁢󠁥󠁮󠁧󠁿 {len(data['pelabuhan'].unique())} pelabuhan")
+            html.Small(f"📊 {len(data):,} records | 🏴󠁧󠁢󠁥󠁮󠁧󠁿 {len(data['pelabuhan'].unique())} pelabuhan | 📅 {data['tahun'].min()}-{data['tahun'].max()}")
         ])
         
         return data.to_dict('records'), ports, default_ports, years, recent_years, success_msg
@@ -369,14 +421,14 @@ def update_quick_stats(data, selected_ports, selected_years):
                 html.Div("🏆", className="stat-icon"),
                 html.Div([
                     html.H3(f"{max_month['pelabuhan'][:8]}"),
-                    html.P("Peringkat Pelabuhan")
+                    html.P("Top Pelabuhan")
                 ], className="stat-content")
             ], className="quick-stat-card quaternary"),
         ]
     except Exception as e:
         return [html.Div(f"❌ Error: {str(e)}", className="error-text")]
 
-# Callback untuk time series chart dengan analisis yang lebih canggih
+# Callback untuk time series chart
 @app.callback(
     Output('time-series-chart', 'figure'),
     [Input('data-store', 'data'),
@@ -439,7 +491,7 @@ def create_enhanced_timeseries(df):
     colors = px.colors.qualitative.Set1
     
     for i, pelabuhan in enumerate(time_data['pelabuhan'].unique()):
-        port_data = time_data[time_data['pelabuhan'] == pelabuhan].sort_values('tgl')
+        port_data = time_data[time_data['pelabuhan'] == pelabuhan].sort_values('tgl').copy()
         
         # Line utama
         fig.add_trace(go.Scatter(
@@ -454,7 +506,7 @@ def create_enhanced_timeseries(df):
         
         # Moving average 6 bulan jika data cukup
         if len(port_data) >= 6:
-            port_data['ma_6'] = port_data['volume'].rolling(window=6, center=True).mean()
+            port_data.loc[:, 'ma_6'] = port_data['volume'].rolling(window=6, center=True).mean()
             fig.add_trace(go.Scatter(
                 x=port_data['tgl'],
                 y=port_data['ma_6'],
@@ -477,8 +529,11 @@ def create_trend_analysis(df):
     
     for i, pelabuhan in enumerate(df['pelabuhan'].unique()):
         port_data = df[df['pelabuhan'] == pelabuhan].groupby('tgl')['volume'].sum().reset_index()
-        port_data = port_data.sort_values('tgl')
+        port_data = port_data.sort_values('tgl').copy()
         
+        if len(port_data) < 2:
+            continue
+            
         # Data asli
         fig.add_trace(go.Scatter(
             x=port_data['tgl'], y=port_data['volume'],
@@ -487,25 +542,31 @@ def create_trend_analysis(df):
         ), row=1, col=1)
         
         # Trend line menggunakan regresi linear
-        x_numeric = pd.to_numeric(port_data['tgl'])
-        slope, intercept, r_value, p_value, std_err = stats.linregress(x_numeric, port_data['volume'])
-        trend_line = slope * x_numeric + intercept
-        
-        fig.add_trace(go.Scatter(
-            x=port_data['tgl'], y=trend_line,
-            mode='lines', name=f"Trend {pelabuhan}",
-            line=dict(color=colors[i % len(colors)], dash='dash'),
-            showlegend=False
-        ), row=1, col=1)
+        try:
+            x_numeric = pd.to_numeric(port_data['tgl'])
+            slope, intercept, r_value, p_value, std_err = stats.linregress(x_numeric, port_data['volume'])
+            trend_line = slope * x_numeric + intercept
+            
+            fig.add_trace(go.Scatter(
+                x=port_data['tgl'], y=trend_line,
+                mode='lines', name=f"Trend {pelabuhan}",
+                line=dict(color=colors[i % len(colors)], dash='dash'),
+                showlegend=False
+            ), row=1, col=1)
+        except:
+            pass
         
         # Growth rate
-        port_data['growth_rate'] = port_data['volume'].pct_change() * 100
-        fig.add_trace(go.Scatter(
-            x=port_data['tgl'], y=port_data['growth_rate'],
-            mode='lines', name=f"Growth {pelabuhan}",
-            line=dict(color=colors[i % len(colors)]),
-            showlegend=False
-        ), row=2, col=1)
+        try:
+            port_data.loc[:, 'growth_rate'] = port_data['volume'].pct_change() * 100
+            fig.add_trace(go.Scatter(
+                x=port_data['tgl'], y=port_data['growth_rate'],
+                mode='lines', name=f"Growth {pelabuhan}",
+                line=dict(color=colors[i % len(colors)]),
+                showlegend=False
+            ), row=2, col=1)
+        except:
+            pass
     
     fig.update_yaxes(title_text="Volume (Ton)", row=1, col=1)
     fig.update_yaxes(title_text="Growth Rate (%)", row=2, col=1)
@@ -541,7 +602,7 @@ def create_statistical_chart(df):
     fig.update_yaxes(title_text="Volume (Ton)")
     return fig
 
-# Callback untuk pie chart yang lebih interaktif
+# Callback pie chart
 @app.callback(
     Output('volume-pie-chart', 'figure'),
     [Input('data-store', 'data'),
@@ -575,10 +636,9 @@ def update_enhanced_pie_chart(data, selected_ports, selected_years, start_date, 
         
         # Aggregate by port
         port_totals = filtered_df.groupby('pelabuhan')['volume'].sum().reset_index()
-        port_totals['percentage'] = (port_totals['volume'] / port_totals['volume'].sum()) * 100
         
         fig = go.Figure(data=[go.Pie(
-            labels=[f"{port}" for port in port_totals['pelabuhan']],
+            labels=port_totals['pelabuhan'],
             values=port_totals['volume'],
             hovertemplate="<b>%{label}</b><br>Volume: %{value:,.0f} ton<br>Persentase: %{percent}<extra></extra>",
             textinfo='label+percent',
@@ -587,7 +647,7 @@ def update_enhanced_pie_chart(data, selected_ports, selected_years, start_date, 
                 colors=px.colors.qualitative.Set1,
                 line=dict(color='white', width=2)
             ),
-            pull=[0.05] * len(port_totals)  # Sedikit tarik keluar untuk efek visual
+            pull=[0.05] * len(port_totals)
         )])
         
         fig.update_layout(
@@ -602,7 +662,7 @@ def update_enhanced_pie_chart(data, selected_ports, selected_years, start_date, 
         return go.Figure().add_annotation(text=f"❌ Error: {str(e)}", 
                                         xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
 
-# Callback untuk comparison chart yang lebih canggih
+# Callback untuk comparison chart
 @app.callback(
     Output('comparison-chart', 'figure'),
     [Input('data-store', 'data'),
@@ -700,7 +760,7 @@ def update_correlation_heatmap(data, start_date, end_date):
             text=np.round(corr_matrix.values, 2),
             texttemplate='%{text}',
             textfont={"size": 12},
-            hovetemplate="<b>%{x} vs %{y}</b><br>Korelasi: %{z:.3f}<extra></extra>"
+            hovertemplate="<b>%{x} vs %{y}</b><br>Korelasi: %{z:.3f}<extra></extra>"
         ))
         
         fig.update_layout(
@@ -949,8 +1009,10 @@ def update_data_table(data, selected_ports, selected_years):
             columns=[
                 {"name": "📅 Tahun", "id": "tahun", "type": "numeric"},
                 {"name": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Pelabuhan", "id": "pelabuhan", "type": "text"},
-                {"name": "📦 Total Volume", "id": "Total Volume", "type": "numeric", "format": FormatTemplate.money(0)},
-                {"name": "📊 Rata-rata", "id": "Rata-rata Volume", "type": "numeric", "format": FormatTemplate.money(0)},
+                {"name": "📦 Total Volume", "id": "Total Volume", "type": "numeric", 
+                 "format": Format(precision=0, scheme=Scheme.fixed)},
+                {"name": "📊 Rata-rata", "id": "Rata-rata Volume", "type": "numeric", 
+                 "format": Format(precision=0, scheme=Scheme.fixed)},
                 {"name": "📋 Records", "id": "Jumlah Record", "type": "numeric"}
             ],
             style_cell={
@@ -976,6 +1038,8 @@ def update_data_table(data, selected_ports, selected_years):
     except Exception as e:
         return html.Div(f"❌ Error: {str(e)}", className="error-text")
 
+# Entry point untuk Railway
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
-    app.run_server(host='0.0.0.0', port=port, debug=False)
+    debug_mode = os.environ.get('DEBUG', 'False').lower() == 'true'
+    app.run_server(host='0.0.0.0', port=port, debug=debug_mode)
