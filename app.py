@@ -5,15 +5,17 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
-import flask
 import os
 from datetime import datetime, timedelta
 from scipy import stats
 import warnings
 warnings.filterwarnings('ignore')
 
-# Inisialisasi app
-app = dash.Dash(__name__, server=flask.Flask(__name__))
+# Inisialisasi app dengan konfigurasi untuk Railway
+app = dash.Dash(__name__)
+server = app.server  # Untuk Railway deployment
+
+# Konfigurasi untuk Railway
 app.title = "Dashboard Visualisasi Volume Bongkar Muat antar Pulau di Pelabuhan Utama Indonesia - BPS"
 
 # Layout aplikasi
@@ -205,11 +207,17 @@ app.layout = html.Div([
 # Fungsi untuk memuat data dari CSV
 def load_csv_data():
     try:
+        # Coba baca dari path yang berbeda untuk Railway
+        csv_path = 'data/data_bongkar_muat_4_pelabuhan utama.csv'
+        if not os.path.exists(csv_path):
+            # Alternatif path jika di root directory
+            csv_path = 'data_bongkar_muat_4_pelabuhan utama.csv'
+        
         # Baca file CSV
-        df = pd.read_csv('data/data_bongkar_muat_4_pelabuhan utama.csv')
+        df = pd.read_csv(csv_path)
         
         # Ubah format tanggal
-        df['tgl'] = pd.to_datetime(df['tgl'])
+        df['tgl'] = pd.to_datetime(df['tgl'], format='%d/%m/%Y')
         
         # Ubah format data dari wide ke long
         df_long = df.melt(id_vars=['tgl'], var_name='pelabuhan', value_name='volume')
@@ -301,6 +309,8 @@ def fetch_data(n_clicks):
         ])
         return [], [], [], [], [], error_msg
 
+# [Sisanya sama dengan callback yang sudah ada...]
+
 # Callback untuk quick stats
 @app.callback(
     Output('quick-stats', 'children'),
@@ -375,6 +385,8 @@ def update_quick_stats(data, selected_ports, selected_years):
         ]
     except Exception as e:
         return [html.Div(f"❌ Error: {str(e)}", className="error-text")]
+
+# [Tambahkan callback lain yang diperlukan...]
 
 # Callback untuk time series chart dengan analisis yang lebih canggih
 @app.callback(
@@ -541,7 +553,7 @@ def create_statistical_chart(df):
     fig.update_yaxes(title_text="Volume (Ton)")
     return fig
 
-# Callback untuk pie chart yang lebih interaktif
+# Callback pie chart
 @app.callback(
     Output('volume-pie-chart', 'figure'),
     [Input('data-store', 'data'),
@@ -587,7 +599,7 @@ def update_enhanced_pie_chart(data, selected_ports, selected_years, start_date, 
                 colors=px.colors.qualitative.Set1,
                 line=dict(color='white', width=2)
             ),
-            pull=[0.05] * len(port_totals)  # Sedikit tarik keluar untuk efek visual
+            pull=[0.05] * len(port_totals)
         )])
         
         fig.update_layout(
@@ -602,379 +614,7 @@ def update_enhanced_pie_chart(data, selected_ports, selected_years, start_date, 
         return go.Figure().add_annotation(text=f"❌ Error: {str(e)}", 
                                         xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
 
-# Callback untuk comparison chart yang lebih canggih
-@app.callback(
-    Output('comparison-chart', 'figure'),
-    [Input('data-store', 'data'),
-     Input('port-selector', 'value'),
-     Input('year-selector', 'value'),
-     Input('date-range', 'start_date'),
-     Input('date-range', 'end_date')],
-    prevent_initial_call=True
-)
-def update_enhanced_comparison_chart(data, selected_ports, selected_years, start_date, end_date):
-    if not data:
-        return go.Figure().add_annotation(text="📊 Muat data untuk melihat perbandingan", 
-                                        xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
-    
-    try:
-        df = pd.DataFrame(data)
-        df['tgl'] = pd.to_datetime(df['tgl'])
-        
-        # Filter data
-        filtered_df = df.copy()
-        if selected_ports:
-            filtered_df = filtered_df[filtered_df['pelabuhan'].isin(selected_ports)]
-        if selected_years:
-            filtered_df = filtered_df[filtered_df['tahun'].isin(selected_years)]
-        if start_date and end_date:
-            filtered_df = filtered_df[(filtered_df['tgl'] >= start_date) & (filtered_df['tgl'] <= end_date)]
-        
-        if filtered_df.empty:
-            return go.Figure().add_annotation(text="⚠️ Tidak ada data dengan filter yang dipilih", 
-                                            xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
-        
-        # Perbandingan berdasarkan tahun dan kuartal
-        comparison_data = filtered_df.groupby(['tahun', 'kuartal', 'pelabuhan'])['volume'].sum().reset_index()
-        comparison_data['period'] = comparison_data['tahun'].astype(str) + '-Q' + comparison_data['kuartal'].astype(str)
-        
-        fig = px.bar(comparison_data, x='period', y='volume', color='pelabuhan',
-                     title='📊 Perbandingan Volume per Kuartal',
-                     barmode='group',
-                     hover_data={'volume': ':,.0f'},
-                     color_discrete_sequence=px.colors.qualitative.Set1)
-        
-        fig.update_layout(
-            xaxis_title="📅 Period",
-            yaxis_title="📦 Volume (Ton)",
-            template="plotly_white",
-            height=500,
-            showlegend=True
-        )
-        
-        fig.update_xaxes(tickangle=45)
-        
-        return fig
-    except Exception as e:
-        return go.Figure().add_annotation(text=f"❌ Error: {str(e)}", 
-                                        xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
-
-# Callback untuk correlation heatmap
-@app.callback(
-    Output('correlation-heatmap', 'figure'),
-    [Input('data-store', 'data'),
-     Input('date-range', 'start_date'),
-     Input('date-range', 'end_date')],
-    prevent_initial_call=True
-)
-def update_correlation_heatmap(data, start_date, end_date):
-    if not data:
-        return go.Figure().add_annotation(text="📊 Muat data untuk melihat korelasi", 
-                                        xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
-    
-    try:
-        df = pd.DataFrame(data)
-        df['tgl'] = pd.to_datetime(df['tgl'])
-        
-        # Filter berdasarkan tanggal
-        if start_date and end_date:
-            df = df[(df['tgl'] >= start_date) & (df['tgl'] <= end_date)]
-        
-        # Pivot data untuk korelasi
-        pivot_df = df.pivot_table(index='tgl', columns='pelabuhan', values='volume', aggfunc='sum')
-        
-        if pivot_df.empty:
-            return go.Figure().add_annotation(text="⚠️ Tidak ada data untuk analisis korelasi", 
-                                            xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
-        
-        # Hitung korelasi
-        corr_matrix = pivot_df.corr()
-        
-        # Buat heatmap
-        fig = go.Figure(data=go.Heatmap(
-            z=corr_matrix.values,
-            x=[f"🏴󠁧󠁢󠁥󠁮󠁧󠁿 {col}" for col in corr_matrix.columns],
-            y=[f"🏴󠁧󠁢󠁥󠁮󠁧󠁿 {idx}" for idx in corr_matrix.index],
-            colorscale='RdYlBu',
-            zmid=0,
-            text=np.round(corr_matrix.values, 2),
-            texttemplate='%{text}',
-            textfont={"size": 12},
-            hovetemplate="<b>%{x} vs %{y}</b><br>Korelasi: %{z:.3f}<extra></extra>"
-        ))
-        
-        fig.update_layout(
-            title="🔗 Matriks Korelasi antar Pelabuhan",
-            template="plotly_white",
-            height=400
-        )
-        
-        return fig
-    except Exception as e:
-        return go.Figure().add_annotation(text=f"❌ Error: {str(e)}", 
-                                        xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
-
-# Callback untuk distribution chart
-@app.callback(
-    Output('distribution-chart', 'figure'),
-    [Input('data-store', 'data'),
-     Input('port-selector', 'value'),
-     Input('year-selector', 'value')],
-    prevent_initial_call=True
-)
-def update_distribution_chart(data, selected_ports, selected_years):
-    if not data:
-        return go.Figure().add_annotation(text="📊 Muat data untuk melihat distribusi", 
-                                        xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
-    
-    try:
-        df = pd.DataFrame(data)
-        
-        # Filter data
-        if selected_ports:
-            df = df[df['pelabuhan'].isin(selected_ports)]
-        if selected_years:
-            df = df[df['tahun'].isin(selected_years)]
-        
-        if df.empty:
-            return go.Figure().add_annotation(text="⚠️ Tidak ada data dengan filter yang dipilih", 
-                                            xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
-        
-        # Buat histogram dengan overlay
-        fig = go.Figure()
-        
-        colors = px.colors.qualitative.Set1
-        
-        for i, pelabuhan in enumerate(df['pelabuhan'].unique()):
-            port_data = df[df['pelabuhan'] == pelabuhan]['volume']
-            
-            fig.add_trace(go.Histogram(
-                x=port_data,
-                name=f"{pelabuhan}",
-                opacity=0.7,
-                marker_color=colors[i % len(colors)],
-                nbinsx=30
-            ))
-        
-        fig.update_layout(
-            title="📈 Distribusi Frekuensi Volume",
-            xaxis_title="📦 Volume (Ton)",
-            yaxis_title="📊 Frekuensi",
-            barmode='overlay',
-            template="plotly_white",
-            height=400
-        )
-        
-        return fig
-    except Exception as e:
-        return go.Figure().add_annotation(text=f"❌ Error: {str(e)}", 
-                                        xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
-
-# Callback untuk seasonal decomposition
-@app.callback(
-    Output('seasonal-decomposition', 'figure'),
-    [Input('data-store', 'data'),
-     Input('port-selector', 'value')],
-    prevent_initial_call=True
-)
-def update_seasonal_decomposition(data, selected_ports):
-    if not data:
-        return go.Figure().add_annotation(text="📊 Muat data untuk analisis seasonal", 
-                                        xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
-    
-    try:
-        df = pd.DataFrame(data)
-        df['tgl'] = pd.to_datetime(df['tgl'])
-        
-        # Filter port (ambil yang pertama jika multiple)
-        if selected_ports:
-            df = df[df['pelabuhan'] == selected_ports[0]]
-        else:
-            df = df[df['pelabuhan'] == df['pelabuhan'].unique()[0]]
-        
-        # Agregasi bulanan
-        monthly_data = df.groupby([df['tgl'].dt.to_period('M')])['volume'].sum().reset_index()
-        monthly_data['tgl'] = monthly_data['tgl'].dt.to_timestamp()
-        
-        if len(monthly_data) < 24:  # Butuh minimal 2 tahun untuk seasonal analysis
-            return go.Figure().add_annotation(text="⚠️ Data tidak cukup untuk analisis seasonal (minimal 24 bulan)", 
-                                            xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
-        
-        # Simple seasonal analysis - perbandingan rata-rata bulanan
-        monthly_data['bulan'] = monthly_data['tgl'].dt.month
-        seasonal_pattern = monthly_data.groupby('bulan')['volume'].mean()
-        
-        # Buat subplot untuk seasonal pattern
-        fig = make_subplots(rows=2, cols=1,
-                           subplot_titles=('📈 Data Time Series', '🔄 Pola Seasonal (Rata-rata Bulanan)'),
-                           vertical_spacing=0.15)
-        
-        # Time series asli
-        fig.add_trace(go.Scatter(
-            x=monthly_data['tgl'],
-            y=monthly_data['volume'],
-            mode='lines+markers',
-            name='Volume Bulanan',
-            line=dict(color='#1f77b4', width=2)
-        ), row=1, col=1)
-        
-        # Pola seasonal
-        bulan_nama = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-                     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-        
-        fig.add_trace(go.Bar(
-            x=bulan_nama,
-            y=seasonal_pattern.values,
-            name='Rata-rata Bulanan',
-            marker_color='#ff7f0e'
-        ), row=2, col=1)
-        
-        fig.update_xaxes(title_text="📅 Tanggal", row=1, col=1)
-        fig.update_xaxes(title_text="📅 Bulan", row=2, col=1)
-        fig.update_yaxes(title_text="📦 Volume (Ton)", row=1, col=1)
-        fig.update_yaxes(title_text="📦 Rata-rata Volume", row=2, col=1)
-        
-        fig.update_layout(
-            title=f"🔄 Analisis Seasonal - {selected_ports[0] if selected_ports else 'All Ports'}",
-            template="plotly_white",
-            height=600,
-            showlegend=False
-        )
-        
-        return fig
-    except Exception as e:
-        return go.Figure().add_annotation(text=f"❌ Error: {str(e)}", 
-                                        xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
-
-# Callback untuk detailed stats
-@app.callback(
-    Output('detailed-stats', 'children'),
-    [Input('data-store', 'data'),
-     Input('port-selector', 'value'),
-     Input('year-selector', 'value')],
-    prevent_initial_call=True
-)
-def update_detailed_stats(data, selected_ports, selected_years):
-    if not data:
-        return [html.Div("📊 Muat data untuk melihat statistik detail", className="placeholder-text")]
-    
-    try:
-        df = pd.DataFrame(data)
-        
-        # Filter data
-        if selected_ports:
-            df = df[df['pelabuhan'].isin(selected_ports)]
-        if selected_years:
-            df = df[df['tahun'].isin(selected_years)]
-        
-        if df.empty:
-            return [html.Div("⚠️ Tidak ada data dengan filter yang dipilih", className="warning-text")]
-        
-        # Hitung statistik per pelabuhan
-        stats_list = []
-        
-        for pelabuhan in df['pelabuhan'].unique():
-            port_data = df[df['pelabuhan'] == pelabuhan]['volume']
-            
-            stats_card = html.Div([
-                html.H5(f"🏴󠁧󠁢󠁥󠁮󠁧󠁿 {pelabuhan}", className="port-stats-title"),
-                html.Div([
-                    html.Div([
-                        html.Strong("📊 Mean: "),
-                        html.Span(f"{port_data.mean():,.0f} ton")
-                    ], className="stat-item"),
-                    html.Div([
-                        html.Strong("📈 Median: "),
-                        html.Span(f"{port_data.median():,.0f} ton")
-                    ], className="stat-item"),
-                    html.Div([
-                        html.Strong("📏 Std Dev: "),
-                        html.Span(f"{port_data.std():,.0f} ton")
-                    ], className="stat-item"),
-                    html.Div([
-                        html.Strong("⬆️ Max: "),
-                        html.Span(f"{port_data.max():,.0f} ton")
-                    ], className="stat-item"),
-                    html.Div([
-                        html.Strong("⬇️ Min: "),
-                        html.Span(f"{port_data.min():,.0f} ton")
-                    ], className="stat-item"),
-                    html.Div([
-                        html.Strong("📐 CV: "),
-                        html.Span(f"{(port_data.std()/port_data.mean()*100):.1f}%")
-                    ], className="stat-item"),
-                ], className="port-stats-content")
-            ], className="port-stats-card")
-            
-            stats_list.append(stats_card)
-        
-        return stats_list
-    except Exception as e:
-        return [html.Div(f"❌ Error: {str(e)}", className="error-text")]
-
-# Callback untuk data table
-@app.callback(
-    Output('data-table-container', 'children'),
-    [Input('data-store', 'data'),
-     Input('port-selector', 'value'),
-     Input('year-selector', 'value')],
-    prevent_initial_call=True
-)
-def update_data_table(data, selected_ports, selected_years):
-    if not data:
-        return html.Div("📊 Muat data untuk melihat tabel", className="placeholder-text")
-    
-    try:
-        df = pd.DataFrame(data)
-        
-        # Filter data
-        if selected_ports:
-            df = df[df['pelabuhan'].isin(selected_ports)]
-        if selected_years:
-            df = df[df['tahun'].isin(selected_years)]
-        
-        if df.empty:
-            return html.Div("⚠️ Tidak ada data dengan filter yang dipilih", className="warning-text")
-        
-        # Buat summary table
-        summary_df = df.groupby(['tahun', 'pelabuhan']).agg({
-            'volume': ['sum', 'mean', 'count']
-        }).round(0)
-        
-        summary_df.columns = ['Total Volume', 'Rata-rata Volume', 'Jumlah Record']
-        summary_df = summary_df.reset_index()
-        
-        return dash_table.DataTable(
-            data=summary_df.to_dict('records'),
-            columns=[
-                {"name": "📅 Tahun", "id": "tahun", "type": "numeric"},
-                {"name": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Pelabuhan", "id": "pelabuhan", "type": "text"},
-                {"name": "📦 Total Volume", "id": "Total Volume", "type": "numeric", "format": FormatTemplate.money(0)},
-                {"name": "📊 Rata-rata", "id": "Rata-rata Volume", "type": "numeric", "format": FormatTemplate.money(0)},
-                {"name": "📋 Records", "id": "Jumlah Record", "type": "numeric"}
-            ],
-            style_cell={
-                'textAlign': 'center',
-                'padding': '10px',
-                'fontFamily': 'Segoe UI, sans-serif'
-            },
-            style_header={
-                'backgroundColor': '#1a5fb4',
-                'color': 'white',
-                'fontWeight': 'bold'
-            },
-            style_data_conditional=[
-                {
-                    'if': {'row_index': 'odd'},
-                    'backgroundColor': '#f8f9fa'
-                }
-            ],
-            page_size=10,
-            sort_action="native",
-            filter_action="native"
-        )
-    except Exception as e:
-        return html.Div(f"❌ Error: {str(e)}", className="error-text")
-
+# Main entry point untuk Railway
 if __name__ == '__main__':
-    app.run(debug=True)
+    port = int(os.environ.get('PORT', 8080))
+    app.run_server(host='0.0.0.0', port=port, debug=False)
